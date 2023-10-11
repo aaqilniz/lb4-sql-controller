@@ -1,0 +1,33 @@
+{
+  "name": "lb4-sql-controller",
+  "version": "1.0.0",
+  "description": "this is a small utility to generate loopback4 based controllers based on sql query",
+  "main": "bin/index.js",
+  "bin": {
+    "lb4-sql-controller": "./bin/index.js"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aaqilniz/lb4-sql-controller.git"
+  },
+  "keywords": [
+    "sql",
+    "lb4",
+    "cli",
+    "controllers"
+  ],
+  "author": "Muhammad Aaqil",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/aaqilniz/lb4-sql-controller/issues"
+  },
+  "homepage": "https://github.com/aaqilniz/lb4-sql-controller#readme",
+  "dependencies": {
+    "node-sql-parser": "^4.11.0",
+    "prettier": "^3.0.3",
+    "yargs": "github:yargs/yargs"
+  }
+}
