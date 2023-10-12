@@ -35,3 +35,27 @@ module.exports.formatCode = async (filePath) => {
     });
     fs.writeFileSync(filePath, formatedCode);
 }
+
+module.exports.replaceText = (filePath, updateThis, updateWith, replaceAll) => {
+    const file = fs.readFileSync(filePath, 'utf8');
+    if (file.indexOf(updateWith) === -1) {
+        const updatedFile = file[replaceAll ? 'replaceAll' : 'replace'](
+            updateThis,
+            updateWith
+        );
+        fs.writeFileSync(filePath, updatedFile, 'utf8');
+    }
+}
+
+module.exports.toCamelCase = (str) => {
+    return str.replace(/(?:^\w|[A-Z]|\b\w|\s+)/g, function (match, index) {
+        if (+match === 0) return ""; // or if (/\s+/.test(match)) for white spaces
+        return index === 0 ? match.toLowerCase() : match.toUpperCase();
+    })
+}
+module.exports.toPascal = (str) => {
+    return str.replace(/(?:^\w|[A-Z]|\b\w|\s+)/g, function (match, index) {
+        if (+match === 0) return "";
+        return index === 0 ? match.toLowerCase() : match.toUpperCase();
+    })
+}

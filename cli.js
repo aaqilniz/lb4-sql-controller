@@ -1,21 +1,21 @@
 const fs = require('fs');
 const yargs = require('yargs/yargs');
 
-const { parseQuery, updateFile, formatCode } = require('./helpers');
+const {
+    parseQuery,
+    updateFile,
+    formatCode,
+    toPascal,
+    toCamelCase,
+} = require('./helpers');
 
 module.exports = async () => {
     const { query } = yargs(process.argv.slice(2)).argv;
-    if(!query) return process.exit(0);
-    // const query = `select * from doctor where id=1`;
-    // const query = `select * from employees where reportsTo=1`;
+    if (!query) return process.exit(0);
     const invokedFrom = process.cwd();
     const controllerDirPath = `${invokedFrom}/src/controllers`;
     if (!fs.existsSync(controllerDirPath)) fs.mkdirSync(controllerDirPath);
-
-    // const query = `select reportsTo, count(*) from employees group by reportsTo`;
-    // const query = `select reportsTo, count(*) as employeesCount from employees group by reportsTo`;
     const parsedQuery = parseQuery(query);
-    console.log(parsedQuery.from);
     const {
         type,
         columns,
@@ -29,6 +29,11 @@ module.exports = async () => {
     let method = '';
     let models = [];
     let filter = {};
+    let queryParams = [];
+    let countCode = '';
+    let isCount = false;
+    let methodImplementation = '';
+    let returnType = 'Promise<any>';
 
     switch (type) {
         case 'select':
@@ -40,18 +45,27 @@ module.exports = async () => {
 
     from.forEach(({ table }) => { models.push(table) });
 
-    if (limit) filter.limit = limit;
+    if (limit) {
+        if (limit.value) {
+            if (limit.value.length) {
+                filter.limit = limit.value[0].value;
+            }
+        }
+    }
     if (where) {
         filter.where = {};
         switch (where.operator) {
             case '=':
-                filter.where[where.left.column] = where.right.value;
+                queryParams.push({
+                    dbField: where.left.column,
+                    queryField: where.right.column,
+                })
+                filter.where[where.left.column] = where.right.column;
                 break;
             default:
                 break;
         }
     }
-
     if (columns) {
         filter.fields = [];
         columns.forEach(({ expr }) => {
@@ -68,12 +82,12 @@ module.exports = async () => {
                     // filter.fields.push(expr.column)
                 }
                 if (expr.name === 'COUNT') {
+                    isCount = true;
                     //count function column name as co
                 }
             }
         });
     }
-
     let modelImports = [];
     let repoImports = [];
     let modelsString = models.toString();
@@ -87,17 +101,42 @@ module.exports = async () => {
 
     let depInjection = ``;
 
+    const findCode = `this.${toCamelCase(repoImports[0])}.find(${JSON.stringify(filter)});`;
+
+    if (isCount) {
+        countCode = `const { count } = await this.${toCamelCase(repoImports[0])}.count();`;
+    }
+
+    if (countCode) {
+        methodImplementation = `
+            return new Promise(async (resolve, reject) => {
+                try {
+                    ${countCode}
+                    const ${models[0]} =  await ${findCode}
+                    resolve({count, ${models[0]}})
+                    } catch (error) {
+                    reject(error);
+                }
+            })
+        `;
+    } else {
+        returnType = `Promise<${modelImports[0]}[]>`;
+        methodImplementation = `return ${findCode}`;
+    }
+
     repoImports.forEach(repoImport => {
         depInjection += `@repository(${repoImport})
-    public ${repoImport.replace(/(?:^\w|[A-Z]|\b\w|\s+)/g, function (match, index) {
-            if (+match === 0) return "";
-            return index === 0 ? match.toLowerCase() : match.toUpperCase();
-        })}: ${repoImport}`
+    public ${toPascal(repoImport)}: ${repoImport}`
     });
-
     const controllerIndexPath = `${invokedFrom}/src/controllers/index.ts`;
     const controllerPath = `${controllerDirPath}/${modelsString}.controller.ts`;
+    let queryArg = '';
+    if (queryParams.length) {
+        if (queryParams[0].queryField) {
+            queryArg = `@param.query.string('${queryParams[0].queryField}') ${queryParams[0].queryField}: any`;
+        }
 
+    }
     let controller = `
     import { get, getModelSchemaRef, param } from '@loopback/rest';
     import { repository } from '@loopback/repository';
@@ -118,14 +157,19 @@ module.exports = async () => {
         },
         },
     })
-    async custom${modelsString}(): Promise<${modelImports[0]}[]> {
-        return this.${repoImports[0].replace(/(?:^\w|[A-Z]|\b\w|\s+)/g, function (match, index) {
-        if (+match === 0) return ""; // or if (/\s+/.test(match)) for white spaces
-        return index === 0 ? match.toLowerCase() : match.toUpperCase();
-    })}.find();
+    async custom${modelsString}(${queryArg ? queryArg : ''}): ${returnType} {
+        ${methodImplementation}
     }
 }
     `;
+    if (filter) {
+        if (filter.where) {
+            const replaceThis = `"${Object.keys(filter.where)[0]}":"${filter.where[Object.keys(filter.where)[0]]}"`;
+            const withThis = `"${Object.keys(filter.where)[0]}":${filter.where[Object.keys(filter.where)[0]]}`;
+            controller = controller.replace(replaceThis, withThis);
+        }
+
+    }
 
     if (!fs.existsSync(controllerPath)) {
         fs.writeFileSync(controllerPath, controller);
