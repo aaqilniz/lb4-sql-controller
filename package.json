@@ -1,6 +1,6 @@
 {
   "name": "lb4-sql-controller",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "this is a small utility to generate loopback4 based controllers based on sql query",
   "main": "bin/index.js",
   "bin": {
@@ -28,6 +28,6 @@
   "dependencies": {
     "node-sql-parser": "^4.11.0",
     "prettier": "^3.0.3",
-    "yargs": "github:yargs/yargs"
+    "yargs": "^17.7.2"
   }
 }
