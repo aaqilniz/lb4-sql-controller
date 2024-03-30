@@ -1,6 +1,6 @@
 {
   "name": "lb4-sql-controller",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "this is a small utility to generate loopback4 based controllers based on sql query",
   "main": "bin/index.js",
   "bin": {

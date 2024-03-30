@@ -226,6 +226,57 @@ module.exports = async () => {
     method.addStatements('return this.repo.execute(rawQuery);');
   }
 
+  if (file.indexOf('count') === -1) {
+    const method = {
+      name: 'count',
+      isAsync: true,
+      returnType: 'Promise<any>',
+    };
+    if (parametersSchema !== '') {
+      method.parameters = [{
+        name: 'sqlParams',
+        type: `{ ${parametersSchema} }`,
+      }]
+    }
+    controllerClass.addMethod(method);
+  }
+
+  const countMethod = controllerClass.getMethod('count');
+  if (file.indexOf('/count\',') === -1) {
+    countMethod.addDecorator({
+      name: 'get',
+      arguments: [
+        `'${path}/count'`,
+        `{ responses: { default: { description: 'Something unexpected happens.' }, '200': { description: 'Successfully executes the query.', content: { 'application/json': { count: { type: 'number' } } } } } }`
+      ],
+    });
+  }
+
+  const parameterCountMethod = countMethod.getParameter('sqlParams');
+  if (file.indexOf('param.query.object') === -1 && parametersSchema !== '') {
+    parameterCountMethod.addDecorator({
+      name: 'param.query.object',
+      arguments: [
+        `'sqlParams'`,
+        `{ properties: { ${parametersSchema} }}`
+      ],
+    });
+  }
+
+  if (file.indexOf('return new HttpErrors') === -1 && variables.length) {
+    countMethod.addStatements(`if(!sqlParams) return new HttpErrors[422]('The sqlParams is required');`);
+  }
+  if (file.indexOf(`} = sqlParams;`) === -1 && variables.length) {
+    countMethod.addStatements(`const { ${variables.toString()} } = sqlParams;`);
+  }
+  if (file.indexOf('const rawQuery =') === -1) {
+    query = query.replace(/distinct\("([^"]*)"\)/g, 'distinct($1)');
+    countMethod.addStatements(`const rawQuery = \`select count(*) as count from (${escapeCharacters(query).replace(/\;$/, '')}) as derived\`;`);
+  }
+  if (file.indexOf('return (await this.repo.execute(rawQuery))[0];') === -1) {
+    countMethod.addStatements('return (await this.repo.execute(rawQuery))[0];');
+  }
+
   sourceFile.formatText();
 
   await project.save();
