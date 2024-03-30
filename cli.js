@@ -1,189 +1,233 @@
-const fs = require('fs');
 const yargs = require('yargs/yargs');
+const fs = require('fs');
+const { Project } = require('ts-morph');
 
 const {
-    parseQuery,
-    updateFile,
-    formatCode,
-    toPascal,
-    toCamelCase,
+  getVariables,
+  getProperties,
+  getTableNames,
+  isLoopBackApp,
+  execute,
+  kebabCase,
+  escapeCharacters,
+  toPascalCase,
+  getFiles,
 } = require('./helpers');
 
 module.exports = async () => {
-    const { query } = yargs(process.argv.slice(2)).argv;
-    if (!query) return process.exit(0);
-    const invokedFrom = process.cwd();
-    const controllerDirPath = `${invokedFrom}/src/controllers`;
-    if (!fs.existsSync(controllerDirPath)) fs.mkdirSync(controllerDirPath);
-    const parsedQuery = parseQuery(query);
-    const {
-        type,
-        columns,
-        from,
-        where,
-        groupby,
-        orderby,
-        limit,
-    } = parsedQuery;
+  let { query, path, repoName, controllerName, config } = yargs(process.argv.slice(2)).argv;
 
-    let method = '';
-    let models = [];
-    let filter = {};
-    let queryParams = [];
-    let countCode = '';
-    let isCount = false;
-    let methodImplementation = '';
-    let returnType = 'Promise<any>';
+  if (config && typeof config === 'string') {
+    config = JSON.parse(config);
+    query = config.query;
+    path = config.path;
+    repoName = config.repoName;
+    controllerName = config.controllerName;
+  }
 
-    switch (type) {
-        case 'select':
-            method = 'get'
-            break;
-        default:
-            break;
+  if (!query) throw new Error('query is required');
+  if (!path) throw new Error('path is required');
+  if (!controllerName) throw new Error('controllerName is required');
+
+  let repoClass = '';
+  if (repoName) {
+    repoClass = `${toPascalCase(repoName)}Repository`;
+  }
+
+  const invokedFrom = process.cwd();
+  const package = require(`${invokedFrom}/package.json`);
+
+  if (!isLoopBackApp(package)) throw Error('Not a loopback project');
+
+  const repoDirPath = `${invokedFrom}/src/repositories`;
+  let repoPath = '';
+
+  if (repoName) {
+    repoPath = `${repoDirPath}/${kebabCase(repoName)}.repository.ts`;
+  }
+
+  const project = new Project({
+    tsConfigFilePath: `${invokedFrom}/tsconfig.json`,
+  });
+
+
+  if (!fs.existsSync(repoPath)) {
+    const repoFiles = getFiles(repoDirPath);
+    for (let i = 0; i < repoFiles.length; i++) {
+      const filePath = repoFiles[i];
+      if (
+        !filePath.includes('index') &&
+        !filePath.includes('README') &&
+        filePath.includes('.ts')
+      ) {
+        const repoSourceFile = project.addSourceFileAtPath(filePath);
+        repoClass = repoSourceFile.getClasses()[0]?.getName();
+      }
     }
+  }
+  if (!repoClass) { throw new Error('Please generate the reposotires first.'); }
 
-    from.forEach(({ table }) => { models.push(table) });
+  const imports = [
+    {
+      namedImports: 'repository',
+      moduleSpecifier: '@loopback/repository'
+    },
+    {
+      namedImports: `${repoClass}`,
+      moduleSpecifier: '../repositories'
+    },
+    {
+      namedImports: ['get', 'param', 'HttpErrors'],
+      moduleSpecifier: '@loopback/rest'
+    },
+  ]
 
-    if (limit) {
-        if (limit.value) {
-            if (limit.value.length) {
-                filter.limit = limit.value[0].value;
-            }
-        }
-    }
-    if (where) {
-        filter.where = {};
-        switch (where.operator) {
-            case '=':
-                queryParams.push({
-                    dbField: where.left.column,
-                    queryField: where.right.column,
-                })
-                filter.where[where.left.column] = where.right.column;
-                break;
-            default:
-                break;
-        }
-    }
-    if (columns) {
-        filter.fields = [];
-        columns.forEach(({ expr }) => {
-            if (expr.column === '*') {
-                delete filter.fields;
-                return;
-            };
-            if (expr.type === 'column_ref') {
-                filter.fields.push(expr.column);
-            }
-            if (expr.type === 'aggr_func') {
-                if (expr.as) {
-                    // we have count(*) with as
-                    // filter.fields.push(expr.column)
-                }
-                if (expr.name === 'COUNT') {
-                    isCount = true;
-                    //count function column name as co
-                }
-            }
-        });
-    }
-    let modelImports = [];
-    let repoImports = [];
-    let modelsString = models.toString();
+  const variables = getVariables(query);
+  const { selectedProperties, columns } = getProperties(query);
+  const tableNames = getTableNames(query);
 
-    models.forEach(model => {
-        model = model.replace(/(\w)(\w*)/g,
-            function (g0, g1, g2) { return g1.toUpperCase() + g2.toLowerCase(); })
-        modelImports.push(model);
-        repoImports.push(`${model}Repository`);
+  const modelDirPath = `${invokedFrom}/src/models`;
+  if (!fs.existsSync(modelDirPath)) fs.mkdirSync(modelDirPath);
+
+  const propertyTypes = {};
+
+  tableNames.forEach(tableName => {
+    const modelPath = `${modelDirPath}/${kebabCase(tableName)}.model.ts`;
+    const modelSourceFile = project.addSourceFileAtPath(modelPath);
+    const modelProperties = modelSourceFile.getClasses()[0].getProperties();
+    modelProperties.forEach(modelProperty => {
+      const typeText = modelProperty.getType().getText();
+      const type = typeText.split(' | ')[0];
+      propertyTypes[modelProperty.getName()] = type;
     });
+  });
 
-    let depInjection = ``;
+  let propertiesSchema = '';
+  let schema = '';
+  let parametersSchema = '';
 
-    const findCode = `this.${toCamelCase(repoImports[0])}.find(${JSON.stringify(filter)});`;
+  const modelName = toPascalCase(tableNames[0]);
 
-    if (isCount) {
-        countCode = `const { count } = await this.${toCamelCase(repoImports[0])}.count();`;
-    }
-
-    if (countCode) {
-        methodImplementation = `
-            return new Promise(async (resolve, reject) => {
-                try {
-                    ${countCode}
-                    const ${models[0]} =  await ${findCode}
-                    resolve({count, ${models[0]}})
-                    } catch (error) {
-                    reject(error);
-                }
-            })
-        `;
+  Object.keys(selectedProperties).forEach(key => {
+    if (key === 'all') {
+      schema = `getModelSchemaRef(${modelName})`;
+      imports.push({
+        namedImports: ['getModelSchemaRef'],
+        moduleSpecifier: '@loopback/rest'
+      });
+      imports.push({
+        namedImports: [modelName],
+        moduleSpecifier: '../models'
+      })
     } else {
-        returnType = `Promise<${modelImports[0]}[]>`;
-        methodImplementation = `return ${findCode}`;
+      const { key: property, type: typeFromQuery } = selectedProperties[key];
+      let type = propertyTypes[key] || typeFromQuery || 'string';
+      if (property === 'count' || property === 'COUNT') type = 'number';
+      propertiesSchema += `${key}: { type: '${type}'}, `;
     }
+  });
+  if (propertiesSchema) {
+    schema = `{ properties: {${propertiesSchema}} }`
+  }
 
-    repoImports.forEach(repoImport => {
-        depInjection += `@repository(${repoImport})
-    public ${toPascal(repoImport)}: ${repoImport}`
+  variables.forEach(variable => {
+    let type = propertyTypes[columns[variable] || variable] || 'string';
+    parametersSchema += `${variable}: { type: '${type}'}, `;
+  });
+
+  const controllerDirPath = `${invokedFrom}/src/controllers`;
+  if (!fs.existsSync(controllerDirPath)) fs.mkdirSync(controllerDirPath);
+
+  const controllerPath = `${controllerDirPath}/${kebabCase(controllerName)}.controller.ts`;
+  if (!fs.existsSync(controllerPath)) {
+    await execute(`
+    lb4 controller --config '{ "name": "${controllerName}", "controllerType": "Empty Controller"}' --yes`,
+      'generating controller.');
+  }
+
+  const sourceFile = project.addSourceFileAtPath(controllerPath);
+
+  const controllerClass = sourceFile.getClasses()[0];
+
+  const file = fs.readFileSync(controllerPath, 'utf8');
+
+  if (file.indexOf('HttpErrors') === -1) {
+    sourceFile.addImportDeclarations(imports);
+  }
+
+  const contructorMethod = controllerClass.getConstructors()[0];
+
+  if (file.indexOf(`${repoClass}`) === -1) {
+    contructorMethod.addParameters([
+      {
+        name: 'repo',
+        type: `${repoClass}`,
+        scope: 'public'
+      }
+    ]);
+  }
+
+  if (file.indexOf(`@repository(${repoClass})`) === -1) {
+    contructorMethod.getParameter('repo').addDecorator({
+      name: 'repository',
+      arguments: [`${repoClass}`]
     });
-    const controllerIndexPath = `${invokedFrom}/src/controllers/index.ts`;
-    const controllerPath = `${controllerDirPath}/${modelsString}.controller.ts`;
-    let queryArg = '';
-    if (queryParams.length) {
-        if (queryParams[0].queryField) {
-            queryArg = `@param.query.string('${queryParams[0].queryField}') ${queryParams[0].queryField}: any`;
-        }
+  }
 
+  if (file.indexOf('executeSQLQuery') === -1) {
+    const method = {
+      name: 'executeSQLQuery',
+      isAsync: true,
+      returnType: 'Promise<any>',
+    };
+    if (parametersSchema !== '') {
+      method.parameters = [{
+        name: 'sqlParams',
+        type: `{ ${parametersSchema} }`,
+      }]
     }
-    let controller = `
-    import { get, getModelSchemaRef, param } from '@loopback/rest';
-    import { repository } from '@loopback/repository';
-    import { ${modelImports.toString()} } from '../models';
-    import { ${repoImports.toString()} } from '../repositories';
+    controllerClass.addMethod(method);
+  }
 
-    export class Custom${modelsString}Controller {
-    constructor(${depInjection}) {}
-    @get('/custom-${modelsString}', {
-        responses: {
-        '200': {
-            description: 'Records of ${modelsString}',
-            content: {
-            'application/json': {
-                schema: {},
-            },
-            },
-        },
-        },
-    })
-    async custom${modelsString}(${queryArg ? queryArg : ''}): ${returnType} {
-        ${methodImplementation}
-    }
-}
-    `;
-    if (filter) {
-        if (filter.where) {
-            const replaceThis = `"${Object.keys(filter.where)[0]}":"${filter.where[Object.keys(filter.where)[0]]}"`;
-            const withThis = `"${Object.keys(filter.where)[0]}":${filter.where[Object.keys(filter.where)[0]]}`;
-            controller = controller.replace(replaceThis, withThis);
-        }
+  const method = controllerClass.getMethod('executeSQLQuery');
 
-    }
+  if (file.indexOf('@get(\'') === -1) {
+    method.addDecorator({
+      name: 'get',
+      arguments: [
+        `'${path}'`,
+        `{ responses: { default: { description: 'Something unexpected happens.' }, '200': { description: 'Successfully executes the query.', content: { 'application/json': { ${schema ? `schema: ${schema}` : ''} } } } } }`
+      ],
+    });
+  }
 
-    if (!fs.existsSync(controllerPath)) {
-        fs.writeFileSync(controllerPath, controller);
-    }
+  const parameter = method.getParameter('sqlParams');
+  if (file.indexOf('param.query.object') === -1 && parametersSchema !== '') {
+    parameter.addDecorator({
+      name: 'param.query.object',
+      arguments: [
+        `'sqlParams'`,
+        `{ properties: { ${parametersSchema} }}`
+      ],
+    });
+  }
 
-    if (!fs.existsSync(controllerIndexPath)) {
-        fs.writeFileSync(controllerIndexPath, `export * from \'./${modelsString}.controller\';`);
-    } else {
-        updateFile(
-            controllerIndexPath,
-            'export',
-            `export * from \'./${modelsString}.controller\';`,
-            true
-        );
-    }
-    await formatCode(`${invokedFrom}/src/controllers/${modelsString}.controller.ts`);
+  if (file.indexOf('return new HttpErrors') === -1 && variables.length) {
+    method.addStatements(`if(!sqlParams) return new HttpErrors[422]('The sqlParams is required');`);
+  }
+  if (file.indexOf(`} = sqlParams;`) === -1 && variables.length) {
+    method.addStatements(`const { ${variables.toString()} } = sqlParams;`);
+  }
+  if (file.indexOf('const rawQuery =') === -1) {
+    query = query.replace(/distinct\("([^"]*)"\)/g, 'distinct($1)');
+    method.addStatements(`const rawQuery = \`${escapeCharacters(query)}\``);
+  }
+  if (file.indexOf('return this.repo.execute(rawQuery);') === -1) {
+    method.addStatements('return this.repo.execute(rawQuery);');
+  }
+
+  sourceFile.formatText();
+
+  await project.save();
+  console.log('successfully generated the controller.');
 }
