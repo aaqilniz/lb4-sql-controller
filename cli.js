@@ -176,7 +176,7 @@ module.exports = async () => {
 
   if (file.indexOf('executeSQLQuery') === -1) {
     const method = {
-      name: 'executeSQLQuery',
+      name: toPascalCase(controllerName),
       isAsync: true,
       returnType: 'Promise<any>',
     };
@@ -189,7 +189,7 @@ module.exports = async () => {
     controllerClass.addMethod(method);
   }
 
-  const method = controllerClass.getMethod('executeSQLQuery');
+  const method = controllerClass.getMethod(toPascalCase(controllerName));
 
   if (file.indexOf('@get(\'') === -1) {
     method.addDecorator({
